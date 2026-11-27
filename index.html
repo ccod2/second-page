@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
-<title>나라키우기 v0.0.2</title>
+<title>나라키우기 v0.0.3</title>
 <style>
 *{box-sizing:border-box}
 html,body{margin:0;height:100%;overflow:hidden;background:#1b262c;color:#eceff1;font-family:system-ui,-apple-system,"Noto Sans KR","Malgun Gothic",sans-serif;touch-action:manipulation;overscroll-behavior:none;-webkit-user-select:none;user-select:none;-webkit-tap-highlight-color:transparent}
@@ -45,6 +45,8 @@ button:disabled{background:#37474f;color:#78909c;cursor:default}
 #rate{margin-top:2px}
 #rate:empty{display:none}
 #sendbtn{display:block;width:100%;margin-top:12px}
+#movebtn{display:block;width:100%;margin-top:8px}
+#movebtn.off{opacity:.45}
 .sendbtns{display:flex;gap:8px;margin-top:12px}
 #btn-draw{flex:2 1 0}
 #btn-sendback{flex:1 1 0}
@@ -71,8 +73,8 @@ button:disabled{background:#37474f;color:#78909c;cursor:default}
 #sheet .sendrow{margin-top:2px}
 #sheet .close{min-height:34px;padding:4px 10px}
 #sheet #owner{margin-top:0}
-#sendbtn,.sendbtns{margin-top:4px}
-#sendbtn,.sendbtns{margin-top:6px}
+#sendbtn,.sendbtns,#movebtn{margin-top:4px}
+#sendbtn,.sendbtns,#movebtn{margin-top:6px}
 #sendhint{margin:2px 0}
 }
 #overlay-disc,#overlay-msg{position:absolute;inset:0;display:none;overflow:auto;background:rgba(16,32,39,.96);z-index:10}
@@ -129,6 +131,7 @@ button:disabled{background:#37474f;color:#78909c;cursor:default}
         <div id="rate"></div>
         <button id="startbtn">여기서 시작</button>
         <button id="sendbtn">병력 보내기</button>
+        <button id="movebtn" class="sub">수도 옮기기</button>
         <div id="sendpanel">
           <label for="in-send">보낼 병력</label>
           <div class="sendrow"><input id="in-send" type="number" inputmode="numeric" min="1" step="1" placeholder="인원"><button id="btn-all" class="sub">전부</button></div>
@@ -209,7 +212,8 @@ const NEUTRAL_DEFENSE = 30;        // 중립 땅 방어 병력
 const MOVE_SEC_PER_KM = 0.15;      // 1km를 가는 데 걸리는 시간 (초)
 const MEET_DIST_KM = 6;            // 길에서 다른 편 병력끼리 이 거리 이내로 가까워지면 전투
 const PATH_MAX_POINTS = 30;        // 길에 찍을 수 있는 점 최대 개수 (출발 땅의 첫 점 제외)
-const UNREACHABLE_LAND_IDS = ['S39', 'dokdo']; // 병력을 보낼 수 없는 땅 (제주, 독도)
+const CAPITAL_MOVE_SEC_PER_KM = 0.3; // 수도 이전: 1km를 가는 데 걸리는 시간 (초). 병력 이동(MOVE_SEC_PER_KM)과 따로 정함
+const UNREACHABLE_LAND_IDS = ['S39', 'dokdo']; // 병력과 수도를 보낼 수 없는 땅 (제주, 독도)
 // --- 모든 폰이 같은 결과를 내기 위한 기준 ---
 const TICK_MS = 100;               // 게임 시간 한 칸의 길이 (ms). 방장 폰만 이 간격으로 게임을 진행함
 const KM_PER_WORLD_UNIT = 111;     // 지도 좌표 1칸 (경도·위도 1도)의 길이 (km)
@@ -225,6 +229,8 @@ const PASSAGE_MARK_PX = 6;         // 통로 표시 크기
 // --- 병력 표시와 안내 ---
 const CAPITAL_MARK_PX = 9;         // 수도 별 표시 크기
 const ARMY_MARK_PX = 10;           // 이동 중인 병력 표시 크기
+const MOVING_CAPITAL_MARK_PX = 13; // 이동하는 수도 표시(별) 크기
+const NOTE_KEEP_SEC = 20;          // 알림 기록을 남겨 두는 시간 (초)
 const DRAW_DOT_PX = 4;             // 길 그리기 점 크기
 const DRAW_LINE_PX = 3;            // 길 그리기 선 굵기
 const TOAST_MS = 2500;             // 안내 문구가 떠 있는 시간
@@ -280,7 +286,8 @@ const TERRAIN_DEFS = [          // 산·강 선 (경도, 위도). passages = 통
        rng: 난수 상태, alive: {플레이어 id: 살아 있는지},
        cap: {플레이어 id: 수도 땅id}, gar: {땅id: 주둔 병력 (수도 포함)}, winner: 승리한 플레이어 id,
        born: {땅id: 점령한 칸}, prog: {땅id: 병사 생기기까지 진행도 0~1},
-       battles: [{ id, tick, x, y, ao, an, bo, bn, aw, rem, land?, army? }] // 전투 연출용 기록 (계산이 끝난 결과)
+       battles: [{ id, tick, x, y, ao, an, bo, bn, aw, rem, land?, army?, hold? }] // 전투 연출용 기록 (계산이 끝난 결과). hold = 연출이 끝나기 전까지 눈에 보일 옛 값 {lands, alive, cap, phase}
+       moves: [{ id, owner, path, cum, len, t0, to }] // 이동하는 수도 (to = 도착할 땅id), notes: [{ id, pid, at, text }] // 그 사람 화면에 보일 안내
        armies: [{ id, owner, n(병사 수), path(지도 좌표 점들), cum(누적 거리 km), len(전체 km), t0(출발 칸) }]
      }
    }
@@ -317,6 +324,8 @@ const playerById = (st, id) => st.players.find(p => p.id === id);
 /* ===================== 병력·전투 계산 =====================
    방장 폰만 계산하고, 결과(전체 상황)를 모두에게 보냄. 난수는 상황 안의 rng 값으로만 굴림. */
 const SPAWN_TICKS = Math.max(1, Math.round(SPAWN_INTERVAL_SEC * 1000 / TICK_MS)); // 병사가 생기는 간격 (칸)
+const CAP_KM_PER_TICK = TICK_MS / 1000 / CAPITAL_MOVE_SEC_PER_KM;                       // 수도가 한 칸에 가는 거리 (km)
+const NOTE_KEEP_TICKS = Math.round(NOTE_KEEP_SEC * 1000 / TICK_MS);                    // 알림 기록을 남겨 두는 시간 (칸)
 const KM_PER_TICK = TICK_MS / 1000 / MOVE_SEC_PER_KM;                               // 한 칸에 가는 거리 (km)
 function rnd(g) { // mulberry32: 정수 계산만 쓰므로 어떤 폰에서도 같은 수열
   g.rng = (g.rng + 0x6D2B79F5) | 0;
@@ -329,7 +338,7 @@ function fight(g, a, b) { // a명 대 b명. a쪽이 이길 확률 = a/(a+b). 이
   return { aWins, remain: Math.ceil(w * w / sum) };
 }
 function beginPlay(s) { // 시작지를 모두 고른 직후: 바로 게임 시작
-  const g = { tick: 0, rng: Math.floor(Math.random() * 4294967296) | 0, alive: {}, cap: {}, gar: {}, born: {}, prog: {}, battles: [], nextBattle: 1, armies: [], nextArmy: 1, winner: null };
+  const g = { tick: 0, rng: Math.floor(Math.random() * 4294967296) | 0, alive: {}, cap: {}, gar: {}, born: {}, prog: {}, battles: [], nextBattle: 1, armies: [], nextArmy: 1, moves: [], nextMove: 1, notes: [], nextNote: 1, winner: null };
   for (const p of s.players) g.alive[p.id] = true;
   for (const id of Object.keys(s.picks)) g.cap[s.picks[id]] = id;
   for (const land of LANDS) g.gar[land.id] = s.picks[land.id] === undefined ? NEUTRAL_DEFENSE : START_TROOPS;
@@ -341,8 +350,8 @@ function makeCum(path) {
   for (let i = 1; i < path.length; i++) c.push(c[i - 1] + kmBetween(path[i - 1][0], path[i - 1][1], path[i][0], path[i][1]));
   return c;
 }
-function armyPos(a, tick) { // 게임 시간이 tick(소수 가능)일 때 병력 위치와 도착 여부
-  const d = Math.min(a.len, Math.max(0, (tick - a.t0) * KM_PER_TICK));
+function armyPos(a, tick, kpt) { // 게임 시간이 tick(소수 가능)일 때 병력(또는 수도) 위치와 도착 여부. kpt = 한 칸에 가는 거리
+  const d = Math.min(a.len, Math.max(0, (tick - a.t0) * (kpt || KM_PER_TICK)));
   let i = 1; while (i < a.cum.length - 1 && a.cum[i] < d) i++;
   const seg = a.cum[i] - a.cum[i - 1], f = seg > 0 ? (d - a.cum[i - 1]) / seg : 1, p = a.path[i - 1], q = a.path[i];
   return { x: p[0] + (q[0] - p[0]) * f, y: p[1] + (q[1] - p[1]) * f, done: d >= a.len };
@@ -362,7 +371,20 @@ function ownerSpawnPerSec(st, pid, T) { // 한 나라의 모든 땅의 초당 �
 }
 function logBattle(g, x, y, ao, an, bo, bn, r, extra) { // 전투 연출용 기록 (계산 결과만 담고, 승패 계산에는 쓰지 않음)
   g.battles = g.battles.filter(b => g.tick - b.tick <= BATTLE_SHOW_TICKS);
-  g.battles.push(Object.assign({ id: g.nextBattle++, tick: g.tick, x, y, ao, an, bo, bn, aw: r.aWins, rem: r.remain }, extra));
+  const ev = Object.assign({ id: g.nextBattle++, tick: g.tick, x, y, ao, an, bo, bn, aw: r.aWins, rem: r.remain }, extra);
+  g.battles.push(ev); return ev;
+}
+function snapState(st) { const g = st.g; return { own: Object.assign({}, st.picks), alive: Object.assign({}, g.alive), cap: Object.assign({}, g.cap), phase: st.phase }; } // 전투 전 눈에 보이는 것들
+function holdDiff(b, st) { // 전투로 달라진 것들의 옛 값 (연출이 끝날 때까지 이 값이 눈에 보임). 달라진 게 없으면 null
+  const g = st.g, h = { lands: {}, alive: {}, cap: {}, phase: null }; let any = false;
+  for (const id of new Set([...Object.keys(b.own), ...Object.keys(st.picks)])) if (b.own[id] !== st.picks[id]) { h.lands[id] = b.own[id] === undefined ? null : b.own[id]; any = true; }
+  for (const pid of Object.keys(b.alive)) if (b.alive[pid] && !g.alive[pid]) { h.alive[pid] = true; any = true; }
+  for (const pid of Object.keys(b.cap)) if (b.cap[pid] !== g.cap[pid]) { h.cap[pid] = b.cap[pid]; any = true; }
+  if (b.phase === 'play' && st.phase === 'over') { h.phase = 'play'; any = true; }
+  return any ? h : null;
+}
+function addNote(g, pid, at, text) { // 그 사람 화면에 at 칸이 되면 보일 안내
+  g.notes = g.notes.filter(n => g.tick - n.at < NOTE_KEEP_TICKS); g.notes.push({ id: g.nextNote++, pid, at, text });
 }
 function doDepart(st, pid, n, path, from) { // 방장만 실행. 규칙에 어긋나면 이유 글자를, 아니면 null을 돌려줌
   const g = st.g;
@@ -380,6 +402,30 @@ function doDepart(st, pid, n, path, from) { // 방장만 실행. 규칙에 어�
   g.armies.push({ id: g.nextArmy++, owner: pid, n, path, cum, len: cum[cum.length - 1], t0: g.tick });
   st.rev++; return null;
 }
+function moveProblem(st, pid, path) { // 마지막 점이 있는 땅이 수도로 옮길 수 있는 땅인지. 문제가 있으면 안내 글자, 없으면 null
+  const last = path[path.length - 1], land = landAtWorld(last[0], last[1]);
+  if (!land || st.picks[land.id] !== pid) return '내 땅으로만 수도를 옮길 수 있습니다.';
+  if (land.id === st.g.cap[pid]) return '지금 수도와 같은 땅입니다.';
+  return null;
+}
+function doMoveCapital(st, pid, path) { // 방장만 실행. 규칙에 어긋나면 이유 글자를, 아니면 null을 돌려줌
+  const g = st.g;
+  if (st.phase !== 'play' || !g.alive[pid]) return '지금은 수도를 옮길 수 없습니다.';
+  if (g.moves.some(m => m.owner === pid)) return '수도 이전은 한 번에 하나만 할 수 있습니다.';
+  if (!Array.isArray(path) || path.length < 2 || path.length > PATH_MAX_POINTS + 1) return '길이 올바르지 않습니다.';
+  path = path.map(p => [Number(p[0]), Number(p[1])]);
+  if (path.some(p => !isFinite(p[0]) || !isFinite(p[1]))) return '길이 올바르지 않습니다.';
+  path[0] = LAND_BY_ID[g.cap[pid]].anchor.slice(); // 첫 점은 항상 지금 수도 땅 안
+  const why = pathProblem(path) || moveProblem(st, pid, path); if (why) return why;
+  const cum = makeCum(path), last = path[path.length - 1];
+  g.moves.push({ id: g.nextMove++, owner: pid, path, cum, len: cum[cum.length - 1], t0: g.tick, to: landAtWorld(last[0], last[1]).id });
+  st.rev++; return null;
+}
+function finishMove(st, m) { // 도착: 그 땅이 새 수도(수도 속도로 시작), 옛 수도는 일반 점령지(점령지 시작 속도부터 다시). 병사는 그대로
+  const g = st.g, old = g.cap[m.owner];
+  if (st.picks[m.to] !== m.owner) return;
+  g.cap[m.owner] = m.to; g.prog[m.to] = 0; g.born[old] = g.tick; g.prog[old] = 0;
+}
 function arrive(st, a) { // 도착 땅에서만 주둔·전투·점령이 일어남
   const g = st.g, last = a.path[a.path.length - 1], land = landAtWorld(last[0], last[1]);
   if (!land) return;
@@ -388,20 +434,24 @@ function arrive(st, a) { // 도착 땅에서만 주둔·전투·점령이 일어
   const def = g.gar[id];
   if (def <= 0) { capture(st, id, a.owner, a.n); return; }
   const r = fight(g, a.n, def);
-  logBattle(g, last[0], last[1], a.owner, a.n, owner === undefined ? null : owner, def, r, { land: id });
-  if (r.aWins) capture(st, id, a.owner, r.remain); else g.gar[id] = r.remain;
+  const ev = logBattle(g, last[0], last[1], a.owner, a.n, owner === undefined ? null : owner, def, r, { land: id });
+  if (r.aWins) capture(st, id, a.owner, r.remain, ev); else g.gar[id] = r.remain;
 }
-function capture(st, id, who, n) {
-  const g = st.g, prev = st.picks[id], wasCapital = prev !== undefined && g.cap[prev] === id;
+function capture(st, id, who, n, ev) { // 계산은 바로 처리. ev(전투 연출)가 있으면 눈에 보이는 결과만 연출이 끝난 뒤로 미룸
+  const g = st.g, prev = st.picks[id], wasCapital = prev !== undefined && g.cap[prev] === id, before = ev ? snapState(st) : null;
   st.picks[id] = who; g.gar[id] = n; g.born[id] = g.tick; g.prog[id] = 0; // 점령한 순간부터 생성 속도가 처음부터 다시 시작
+  const at = ev ? ev.tick + BATTLE_ANIM_TICKS : g.tick;
+  for (const m of g.moves.filter(m => m.to === id)) addNote(g, m.owner, at, '도착할 땅을 빼앗겨 수도 이전이 취소되었습니다.'); // 도착할 땅을 빼앗기면 이전 취소
+  g.moves = g.moves.filter(m => m.to !== id);
   if (wasCapital) eliminate(st, prev);
+  if (ev) { const h = holdDiff(before, st); if (h) ev.hold = h; }
 }
 function eliminate(st, pid) { // 수도를 빼앗긴 나라: 땅은 모두 중립, 이동 중인 병력은 사라짐
   const g = st.g; g.alive[pid] = false; g.cap[pid] = null;
   for (const id of Object.keys(st.picks)) if (st.picks[id] === pid) { delete st.picks[id]; delete g.born[id]; delete g.prog[id]; g.gar[id] = NEUTRAL_DEFENSE; }
-  g.armies = g.armies.filter(a => a.owner !== pid);
+  g.armies = g.armies.filter(a => a.owner !== pid); g.moves = g.moves.filter(m => m.owner !== pid);
   const left = st.players.filter(p => g.alive[p.id]);
-  if (left.length === 1) { st.phase = 'over'; g.winner = left[0].id; g.armies = []; }
+  if (left.length === 1) { st.phase = 'over'; g.winner = left[0].id; g.armies = []; g.moves = []; }
 }
 function simTick(st) { // 게임 시간을 1칸 진행. 바뀐 것이 있으면 true
   const g = st.g; g.tick++; const T = g.tick; let changed = false;
@@ -421,6 +471,10 @@ function simTick(st) { // 게임 시간을 1칸 진행. 바뀐 것이 있으면 
     if (!armyPos(a, T).done || !g.armies.includes(a)) continue;
     g.armies = g.armies.filter(x => x !== a); arrive(st, a); changed = true;
     if (st.phase !== 'play') break;
+  }
+  for (const m of g.moves.slice()) { // 수도 이전 도착
+    if (!armyPos(m, T, CAP_KM_PER_TICK).done || !g.moves.includes(m)) continue;
+    g.moves = g.moves.filter(x => x !== m); finishMove(st, m); changed = true;
   }
   if (st.phase === 'play') { // 병사 생기기: 주인 있는 땅마다 그 땅에 머무는 병력에 더해짐
     for (const id of Object.keys(st.picks)) {
@@ -546,7 +600,7 @@ function pathProblem(path) { // 길의 점들이 규칙에 맞는지. 문제가 
   for (let i = 1; i < path.length; i++) {
     const land = landAtWorld(path[i][0], path[i][1]);
     if (!land) return SEG_MSG.sea;
-    if (UNREACHABLE_LAND_IDS.includes(land.id)) return '제주와 독도에는 병력을 보낼 수 없습니다.';
+    if (UNREACHABLE_LAND_IDS.includes(land.id)) return '제주와 독도로는 갈 수 없습니다.';
     const why = segCheck(path[i - 1][0], path[i - 1][1], path[i][0], path[i][1]);
     if (why) return SEG_MSG[why];
   }
@@ -607,6 +661,9 @@ function onHostConnection(conn) {
       if (s) hostApply(s);
     } else if (msg.t === 'depart' && pid !== null) {
       const err = doDepart(state, pid, msg.n, msg.path, msg.from);
+      if (err) conn.send({ t: 'reject', msg: err }); else { broadcast(); renderAll(); }
+    } else if (msg.t === 'move' && pid !== null) {
+      const err = doMoveCapital(state, pid, msg.path);
       if (err) conn.send({ t: 'reject', msg: err }); else { broadcast(); renderAll(); }
     }
   });
@@ -741,14 +798,45 @@ function renderAll() {
   if (!$('screen-game').classList.contains('active')) showScreen('game');
   if (draw && (state.phase !== 'play' || !state.g.alive[me])) draw = null;
   renderTopbar(); renderSheet(); renderDrawbar(); checkModals(); drawMap(); ensureAnim();
+  if (state.g) { lastVisSig = vis(tickNow()).sig; checkNotes(); }
 }
 function toast(t) {
   const e = $('toast'); e.textContent = t; e.style.display = 'block';
   clearTimeout(toastTimer); toastTimer = setTimeout(() => { e.style.display = 'none'; }, TOAST_MS);
 }
-function checkModals() { // 탈락 안내, 승리 안내 (각각 한 번만)
+function vis(T) { // 눈에 보이는 상태. 전투 연출이 끝나기 전에는 옛 주인·옛 수도·살아 있음으로 보임 (계산 결과는 이미 처리됨)
+  const g = state.g, h = { lands: {}, alive: {}, cap: {}, phase: null };
+  if (g) for (const ev of g.battles) { // 같은 항목이 여러 연출에 걸리면 가장 먼저 일어난 연출의 옛 값이 먼저 보임
+    if (!ev.hold || T >= ev.tick + BATTLE_ANIM_TICKS) continue;
+    for (const k in ev.hold.lands) if (!(k in h.lands)) h.lands[k] = ev.hold.lands[k];
+    for (const k in ev.hold.alive) if (!(k in h.alive)) h.alive[k] = ev.hold.alive[k];
+    for (const k in ev.hold.cap) if (!(k in h.cap)) h.cap[k] = ev.hold.cap[k];
+    if (ev.hold.phase && h.phase === null) h.phase = ev.hold.phase;
+  }
+  return {
+    owner: id => id in h.lands ? (h.lands[id] === null ? undefined : h.lands[id]) : state.picks[id],
+    alive: pid => pid in h.alive ? h.alive[pid] : g.alive[pid],
+    cap: pid => pid in h.cap ? h.cap[pid] : g.cap[pid],
+    over: h.phase === null ? state.phase === 'over' : h.phase === 'over',
+    sig: JSON.stringify(h)
+  };
+}
+let lastVisSig = '', noteShown = null;
+function checkNotes() { // 때가 된 안내를 그 사람 화면에 한 번만 보임 (처음 들어온 뒤의 새 안내만)
   const g = state.g; if (!g) return;
-  const out = g.alive[me] === false && !shownOut, over = state.phase === 'over' && !shownWin;
+  if (noteShown === null) noteShown = new Set(g.notes.map(n => n.id));
+  const T = tickNow();
+  for (const n of g.notes) if (!noteShown.has(n.id) && T >= n.at) { noteShown.add(n.id); if (n.pid === me) toast(n.text); }
+}
+function refreshVisual() { // 연출이 끝나 눈에 보이는 결과가 바뀌는 순간 글자와 안내도 함께 갱신
+  if (!state || !state.g) return;
+  const s = vis(tickNow()).sig;
+  if (s !== lastVisSig) { lastVisSig = s; renderTopbar(); renderSheet(); checkModals(); }
+  checkNotes();
+}
+function checkModals() { // 탈락 안내, 승리 안내 (각각 한 번만. 전투 연출이 끝난 뒤에 보임)
+  const g = state.g; if (!g) return;
+  const V = vis(tickNow()), out = V.alive(me) === false && !shownOut, over = V.over && !shownWin;
   if (!out && !over) return;
   const lines = [];
   if (out) { lines.push('탈락했습니다'); shownOut = true; }
@@ -789,35 +877,36 @@ function renderTopbar() {
     });
     return;
   }
-  const g = state.g;
+  const g = state.g, V = vis(tickNow());
   const roster = box => state.players.forEach(p => {
     const s = document.createElement('span'); s.style.cssText = 'display:inline-flex;align-items:center;gap:6px';
-    s.append(playerChip(state, p.id), document.createTextNode(p.name + (g.alive[p.id] ? '' : ' 탈락')));
+    s.append(playerChip(state, p.id), document.createTextNode(p.name + (V.alive(p.id) ? '' : ' 탈락')));
     box.append(s);
   });
-  if (state.phase === 'over') { tl.textContent = playerById(state, g.winner).name + ' 님이 승리했습니다'; roster(ol); }
+  if (V.over) { tl.textContent = playerById(state, g.winner).name + ' 님이 승리했습니다'; roster(ol); }
   else {
     roster(tl);
-    if (g.alive[me]) { const r = document.createElement('span'); r.id = 'myrate'; ol.append(r); renderRates(); }
+    if (V.alive(me)) { const r = document.createElement('span'); r.id = 'myrate'; ol.append(r); renderRates(); }
   }
 }
 function renderRates() { // 초당 생성 수: 위쪽에는 내 나라 합계, 정보창에는 그 땅의 현재 속도 (소수 첫째 자리까지)
   if (!state || !state.g || state.phase !== 'play') return;
   const T = tickNow(), g = state.g;
   const m = $('myrate'); if (m) m.textContent = '내 나라 초당 생성 ' + ownerSpawnPerSec(state, me, T).toFixed(1) + '명';
-  if (selectedId) $('rate').textContent = '초당 생성: ' + (state.picks[selectedId] === undefined ? '-' : spawnPerSec(state, selectedId, T).toFixed(1) + '명');
+  if (selectedId) $('rate').textContent = '초당 생성: ' + (state.picks[selectedId] === undefined || vis(T).owner(selectedId) !== state.picks[selectedId] ? '-' : spawnPerSec(state, selectedId, T).toFixed(1) + '명');
 }
-setInterval(() => { if (state && state.g && state.phase === 'play' && $('screen-game').classList.contains('active')) renderRates(); }, HUD_REFRESH_MS);
+setInterval(() => { if (state && state.g && $('screen-game').classList.contains('active')) { if (state.phase === 'play') renderRates(); refreshVisual(); } }, HUD_REFRESH_MS);
 function renderSheet() {
   const sh = $('sheet');
   if (!selectedId || draw) { sh.classList.remove('open'); return; }
   const land = LAND_BY_ID[selectedId], g = state.g, owner = state.picks[selectedId];
-  const isCap = !!g && owner !== undefined && g.cap[owner] === selectedId;
+  const V = g ? vis(tickNow()) : null, vo = V ? V.owner(selectedId) : owner; // vo = 눈에 보이는 주인
+  const isCap = !!g && vo !== undefined && V.cap(vo) === selectedId;
   sh.classList.add('open'); $('startbtn').disabled = false;
   $('landname').textContent = land.name + (isCap ? ' (수도)' : '');
   const ow = $('owner'); ow.textContent = ''; ow.append(document.createTextNode('주인: '));
-  if (owner === undefined) ow.append(document.createTextNode('없음'));
-  else ow.append(playerChip(state, owner), document.createTextNode(playerById(state, owner).name));
+  if (vo === undefined) ow.append(document.createTextNode('없음'));
+  else ow.append(playerChip(state, vo), document.createTextNode(playerById(state, vo).name));
   const gar = g ? g.gar[selectedId] : 0;
   $('troops').textContent = g ? '방어 병력: ' + gar : '';
   $('rate').textContent = '';
@@ -826,24 +915,28 @@ function renderSheet() {
   if (!mine) sheetMode = 'info';
   $('startbtn').style.display = canPick ? '' : 'none';
   $('sendbtn').style.display = mine && sheetMode === 'info' ? '' : 'none';
+  const myCap = !!g && owner === me && g.cap[me] === selectedId && state.phase === 'play' && g.alive[me];
+  $('movebtn').style.display = myCap && sheetMode === 'info' ? '' : 'none';
+  $('movebtn').classList.toggle('off', myCap && g.moves.some(m => m.owner === me));
   $('sendpanel').style.display = mine && sheetMode === 'send' ? 'block' : 'none';
   $('sheet').classList.toggle('sending', mine && sheetMode === 'send');
   renderRates();
 }
 function renderDrawbar() {
   const bar = $('drawbar'); bar.classList.toggle('open', !!draw); if (!draw) return;
-  let t = '보낼 병력 ' + draw.n + '명. 점을 차례로 눌러 도착 땅까지 길을 그리세요.';
-  if (draw.pts.length > 1) { const p = draw.pts[draw.pts.length - 1], l = landAtWorld(p[0], p[1]); t = '보낼 병력 ' + draw.n + '명 · 도착 땅: ' + (l ? l.name : ''); }
+  const lead = draw.kind === 'capital' ? '수도 이전' : '보낼 병력 ' + draw.n + '명', dest = draw.kind === 'capital' ? '새 수도 후보: ' : '도착 땅: ';
+  let t = lead + '. 점을 차례로 눌러 ' + (draw.kind === 'capital' ? '새 수도 땅' : '도착 땅') + '까지 길을 그리세요.';
+  if (draw.pts.length > 1) { const p = draw.pts[draw.pts.length - 1], l = landAtWorld(p[0], p[1]); t = lead + ' · ' + dest + (l ? l.name : ''); }
   $('drawinfo').textContent = t; $('btn-undo').disabled = draw.pts.length < 2; $('btn-go').disabled = draw.pts.length < 2;
 }
 let animOn = false;
-const busyNow = () => !!(state && state.g && (state.g.armies.length || activeBattles(state.g, tickNow()).length));
+const busyNow = () => !!(state && state.g && (state.g.armies.length || state.g.moves.length || activeBattles(state.g, tickNow()).length));
 function ensureAnim() { // 이동 중인 병력이나 전투 연출이 있는 동안 계속 다시 그림
   if (animOn || !state || !state.g || !busyNow()) return;
   animOn = true;
   const loop = () => {
     if (net.dead || !busyNow()) { animOn = false; drawMap(); return; }
-    drawMapNow(); requestAnimationFrame(loop);
+    drawMapNow(); refreshVisual(); requestAnimationFrame(loop);
   };
   requestAnimationFrame(loop);
 }
@@ -899,8 +992,9 @@ function drawMapNow() {
   ctx.setTransform(view.dpr, 0, 0, view.dpr, 0, 0);
   ctx.fillStyle = COLOR_SEA; ctx.fillRect(0, 0, view.w, view.h);
   ctx.lineJoin = 'round'; ctx.lineWidth = LAND_STROKE_PX; ctx.strokeStyle = COLOR_LAND_STROKE;
+  const V = state && state.g ? vis(tickNow()) : null;
   const fillOf = land => {
-    const o = state && state.picks[land.id];
+    const o = V ? V.owner(land.id) : state && state.picks[land.id];
     return o === undefined || o === null ? COLOR_LAND_NONE : PLAYER_COLORS[playerById(state, o).color].hex;
   };
   for (const land of LANDS) {
@@ -943,10 +1037,11 @@ function drawTerrain(sc, ox, oy) { // 산 선, 강 선, 통로 표시 (고개 = 
   }
   ctx.lineWidth = LAND_STROKE_PX;
 }
-function drawCapitals(sc, ox, oy) { // 수도는 주인 색의 별
+function drawCapitals(sc, ox, oy) { // 수도는 주인 색의 별 (전투 연출이 끝나기 전에는 옛 수도가 보임)
   const g = state && state.g; if (!g) return;
+  const V = vis(tickNow());
   for (const p of state.players) {
-    const id = g.cap[p.id]; if (!id) continue;
+    const id = V.cap(p.id); if (!id) continue;
     const a = LAND_BY_ID[id].anchor, x = a[0] * sc + ox, y = a[1] * sc + oy;
     if (x < -20 || y < -20 || x > view.w + 20 || y > view.h + 20) continue;
     ctx.beginPath();
@@ -975,7 +1070,7 @@ const colorOf = o => o === null || o === undefined ? { hex: COLOR_COUNT_NEUTRAL,
 function drawLandCounts(sc, ox, oy) { // 확대 배율이 기준 이상일 때만, 땅마다 방어 병력 숫자 (주인 색 바탕, 중립은 회색). 겹치면 작은 땅 숫자는 생략
   const g = state && state.g; if (!g || view.zoom < LAND_COUNT_MIN_ZOOM) return;
   const hide = new Set(activeBattles(g, tickNow()).filter(b => b.land).map(b => b.land)); // 전투 연출 중인 땅은 연출이 숫자를 대신함
-  const capIds = new Set(Object.values(g.cap).filter(Boolean)), list = [];
+  const V = vis(tickNow()), capIds = new Set(state.players.map(p => V.cap(p.id)).filter(Boolean)), list = [];
   for (const land of LANDS) {
     if (hide.has(land.id)) continue;
     const isCap = capIds.has(land.id);
@@ -986,7 +1081,7 @@ function drawLandCounts(sc, ox, oy) { // 확대 배율이 기준 이상일 때�
   list.sort((p, q) => q.key - p.key);
   const placed = [];
   for (const it of list) {
-    const text = String(g.gar[it.land.id]), pc = colorOf(state.picks[it.land.id]);
+    const text = String(g.gar[it.land.id]), pc = colorOf(V.owner(it.land.id));
     ctx.font = 'bold ' + LAND_COUNT_FONT_PX + 'px system-ui,sans-serif';
     const h = LAND_COUNT_FONT_PX + 6, w = Math.max(h, ctx.measureText(text).width + 10);
     const box = { l: it.x - w / 2 - 2, r: it.x + w / 2 + 2, t: it.y - h / 2 - 2, b: it.y + h / 2 + 2 };
@@ -1027,6 +1122,14 @@ function drawOverlays(sc, ox, oy) { // 그리는 중인 길, 이동 중인 병�
     ctx.lineTo(x - w / 2 + R, y + R); ctx.arc(x - w / 2 + R, y, R, Math.PI / 2, Math.PI * 1.5); ctx.closePath();
     ctx.fillStyle = pc.hex; ctx.fill(); ctx.lineWidth = 2; ctx.strokeStyle = '#ffffff'; ctx.stroke();
     ctx.fillStyle = pc.text; ctx.fillText(t, x, y + 1);
+  }
+  for (const m of g.moves) { // 이동하는 수도: 주인 색 별 (병력 표시와 구분되게 크고 테두리가 이중)
+    const p = armyPos(m, T, CAP_KM_PER_TICK), x = p.x * sc + ox, y = p.y * sc + oy;
+    if (x < -40 || y < -40 || x > view.w + 40 || y > view.h + 40) continue;
+    ctx.beginPath();
+    for (let i = 0; i < 10; i++) { const r = i % 2 ? MOVING_CAPITAL_MARK_PX * 0.45 : MOVING_CAPITAL_MARK_PX, t = -Math.PI / 2 + i * Math.PI / 5; ctx.lineTo(x + Math.cos(t) * r, y + Math.sin(t) * r); }
+    ctx.closePath(); ctx.lineWidth = 6; ctx.strokeStyle = '#102027'; ctx.stroke();
+    ctx.fillStyle = PLAYER_COLORS[playerById(state, m.owner).color].hex; ctx.fill(); ctx.lineWidth = 3; ctx.strokeStyle = '#ffffff'; ctx.stroke();
   }
   drawBattles(live, T, sc, ox, oy);
   ctx.lineWidth = LAND_STROKE_PX;
@@ -1174,6 +1277,11 @@ $('in-send').oninput = () => { // 그 땅의 병력보다 많이는 입력할 �
   $('in-send').value = v;
 };
 $('btn-all').onclick = () => { $('in-send').value = selGar(); $('sendhint').textContent = ''; };
+$('movebtn').onclick = () => { // 수도 옮기기: 병력 보내기처럼 길 그리기로 넘어감
+  if (state.g.moves.some(m => m.owner === me)) { toast('수도 이전은 한 번에 하나만 할 수 있습니다.'); return; }
+  draw = { kind: 'capital', n: 0, from: selectedId, pts: [LAND_BY_ID[selectedId].anchor.slice()] };
+  selectedId = null; sheetMode = 'info'; renderAll();
+};
 $('btn-sendback').onclick = () => { sheetMode = 'info'; renderSheet(); };
 $('btn-draw').onclick = () => {
   let n = parseInt($('in-send').value, 10);
@@ -1188,9 +1296,17 @@ $('btn-cancel').onclick = () => { draw = null; renderAll(); };
 $('btn-go').onclick = () => {
   if (!draw || draw.pts.length < 2) return;
   const path = draw.pts.map(p => [+p[0].toFixed(5), +p[1].toFixed(5)]), n = draw.n;
-  const why = pathProblem(path); if (why) { toast(why); return; }
-  const from = draw.from; draw = null; submitDepart(n, path, from); renderAll();
+  const why = pathProblem(path) || (draw.kind === 'capital' ? moveProblem(state, me, path) : null); if (why) { toast(why); return; }
+  const from = draw.from, kind = draw.kind; draw = null;
+  if (kind === 'capital') submitMove(path); else submitDepart(n, path, from);
+  renderAll();
 };
+function submitMove(path) {
+  if (net.role === 'host') {
+    const err = doMoveCapital(state, me, path);
+    if (err) toast(err); else { broadcast(); renderAll(); }
+  } else if (net.hostConn && net.hostConn.open) net.hostConn.send({ t: 'move', path });
+}
 function submitDepart(n, path, from) {
   if (net.role === 'host') {
     const err = doDepart(state, me, n, path, from);
